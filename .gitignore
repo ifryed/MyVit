@@ -1,0 +1,8 @@
+# IDEs
+.vscode
+.DS_Store
+__pycache__
+src/sandbox.ipynb
+
+# Stages
+stage*
