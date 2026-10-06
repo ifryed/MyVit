@@ -3,6 +3,8 @@
 .DS_Store
 __pycache__
 src/sandbox.ipynb
+lightning_logs/
+data/
 
 # Stages
 stage*

@@ -4,7 +4,7 @@ A Vision Transformer built from scratch in PyTorch and trained on CIFAR-10 with 
 
 The model turns each 32×32 image into a sequence of patch tokens, adds a learnable class token and positional embeddings, runs the sequence through transformer encoder blocks, and classifies from the class token.
 
-The numbered `stage*.md` files are learning notes from building the model piece by piece. This README and [`docs/architecture.md`](docs/architecture.md) describe the project as it is now.
+README and [`docs/architecture.md`](docs/architecture.md) describe the project as it is now.
 
 ## Layout
 
@@ -17,10 +17,8 @@ MyViT/
 │   ├── pl_model.py        # Lightning module, loss, optimizer, TensorBoard images
 │   ├── pl_datamodule.py   # train/val split and dataloaders
 │   ├── cifarDataset.py    # CIFAR-10 PNG loader and patch helpers
-│   └── sandbox.ipynb      # patch split / reconstruct experiments
 ├── data/cifar-10/         # images and labels (not created by the code)
 ├── docs/architecture.md
-└── stage1.md … stage7.md  # learning notes
 ```
 
 ## Requirements
@@ -40,7 +38,7 @@ pip install torch torchvision pytorch-lightning tensorboard numpy scikit-image m
 
 ## Data
 
-Place the Kaggle-style CIFAR-10 PNG release under `data/cifar-10`:
+Download the CIFAR-10 PNG release from the [Kaggle CIFAR-10 competition](https://www.kaggle.com/competitions/cifar-10/data) (a Kaggle account is required) and place it under `data/cifar-10`:
 
 ```
 data/cifar-10/
