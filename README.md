@@ -1,6 +1,6 @@
 # MyViT
 
-A Vision Transformer built from scratch in PyTorch and trained on CIFAR-10 with PyTorch Lightning.
+A Vision Transformer built from scratch in PyTorch and trained on CIFAR-10 or STL-10 with PyTorch Lightning.
 
 The model turns each 32×32 image into a sequence of patch tokens, adds a learnable class token and positional embeddings, runs the sequence through transformer encoder blocks, and classifies from the class token.
 
@@ -15,9 +15,10 @@ MyViT/
 │   ├── ViT.py             # full model: patches, CLS, positions, stack, head
 │   ├── transBlock.py      # patch embedding, attention, MLP, encoder block
 │   ├── pl_model.py        # Lightning module, loss, optimizer, TensorBoard images
-│   ├── pl_datamodule.py   # train/val split and dataloaders
+│   ├── pl_datamodule.py   # CIFAR-10 and STL-10 dataloaders
 │   ├── cifarDataset.py    # CIFAR-10 PNG loader and patch helpers
 ├── data/cifar-10/         # images and labels (not created by the code)
+├── data/stl-10/           # STL-10 binaries (downloaded by --dataset stl10)
 ├── docs/architecture.md
 ```
 
@@ -53,6 +54,8 @@ Images are read as RGB, converted to channel-first tensors, and scaled to `[0, 1
 
 The labeled training set is split 90% / 10% with a fixed seed (`42`). The same indices are used for both copies of the data so train and val do not share images, while val images are not flipped.
 
+STL-10 is 96×96 RGB with the same 10-class setup (airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck). `--dataset stl10` downloads it into `data/stl-10` on first use. Training uses the 5,000 labeled images. Validation uses the official 8,000-image test split. The ViT default patch size is 8 (144 tokens). Swin keeps patch size 4 so its four stages can keep halving the 24×24 grid.
+
 ## Train
 
 From the repository root:
@@ -65,8 +68,9 @@ Python adds `src/` to the import path because that is the script directory. Defa
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--data-root` | `data/cifar-10` | Dataset directory |
-| `--batch-size` | `128` | Batch size |
+| `--dataset` | `cifar` | `cifar` (32×32) or `stl10` (96×96) |
+| `--data-root` | `data/cifar-10` or `data/stl-10` | Dataset directory |
+| `--batch-size` | `128` for cifar, `64` for stl10 | Batch size |
 | `--num-workers` | `4` | DataLoader workers |
 | `--max-epochs` | `20` | Training epochs |
 | `--lr` | `1e-3` | AdamW learning rate |
@@ -74,13 +78,17 @@ Python adds `src/` to the import path because that is the script directory. Defa
 | `--embedding-dim` | `128` | Token width |
 | `--num-heads` | `4` | Attention heads |
 | `--num-layers` | `6` | Encoder blocks |
-| `--patch-size` | `4` | Patch side length in pixels |
+| `--patch-size` | `4` for cifar, `8` for stl10 ViT, `4` for stl10 Swin | Patch side length in pixels |
 | `--dropout` | `0.1` | Dropout after positional embeddings |
 | `--log-dir` | `lightning_logs` | TensorBoard root |
-| `--experiment-name` | `vit_cifar` | Run name under the log dir |
+| `--experiment-name` | `<model>_<dataset>` | Run name under the log dir |
 | `--fast-dev-run` | off | One train and one val batch, then stop |
 
-Image size is fixed at 32 and the number of classes at 10. The MLP inside each block expands to `4 × embedding_dim`. `embedding_dim` must be divisible by `num_heads`. `patch_size` must divide 32.
+Image size is 32 for CIFAR-10 and 96 for STL-10. The number of classes is 10. The MLP inside each block expands to `4 × embedding_dim`. `embedding_dim` must be divisible by `num_heads`. `patch_size` must divide the image side.
+
+```bash
+python src/train.py --dataset stl10
+```
 
 A short smoke test:
 

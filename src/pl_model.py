@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 from matplotlib import cm
 from cifarDataset import CIFAR10_CLASSES
 from pl_datamodule import CIFAR_MEAN, CIFAR_STD
+from SWIN import SwinTransformer
 from ViT import ViT
 
 class ViTClassifier(pl.LightningModule):
@@ -19,22 +20,49 @@ class ViTClassifier(pl.LightningModule):
         dropout=0.1,
         lr=3e-4,
         weight_decay=0.05,
+        model_name="vit",
+        embed_dim=96,
+        window_size=7,
+        depths=(2, 2, 6, 2),
+        swin_heads=(3, 6, 12, 24),
+        class_names=None,
+        mean=CIFAR_MEAN,
+        std=CIFAR_STD,
     ):
         super().__init__()
+        if class_names is None:
+            class_names = CIFAR10_CLASSES
         self.save_hyperparameters()
-        self.model = ViT(
-            image_size=image_size,
-            patch_size=patch_size,
-            num_classes=num_classes,
-            embedding_dim=embedding_dim,
-            num_heads=num_heads,
-            num_layers=num_layers,
-            dropout=dropout,
-        )
+        if model_name == "vit":
+            self.model = ViT(
+                image_size=image_size,
+                patch_size=patch_size,
+                num_classes=num_classes,
+                embedding_dim=embedding_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+                dropout=dropout,
+            )
+        elif model_name == "swin":
+            self.model = SwinTransformer(
+                num_classes=num_classes,
+                patch_size=patch_size,
+                embed_dim=embed_dim,
+                depths=tuple(depths),
+                num_heads=tuple(swin_heads),
+                window_size=window_size,
+            )
+        else:
+            raise ValueError(f"Unknown model '{model_name}'. Choose 'vit' or 'swin'.")
         self.criterion = nn.CrossEntropyLoss()
         self.example_input_array = torch.zeros(1, 3, image_size, image_size)
         
         self.sample = {"images": [], "labels": [], "attentions": [], "predictions": []}
+
+    def _denormalize(self, images):
+        mean = images.new_tensor(self.hparams.mean)[:, None, None]
+        std = images.new_tensor(self.hparams.std)[:, None, None]
+        return (images * std + mean).clamp(0, 1)
 
     def _attention_overlay(self, preview, grid):
         values = grid.squeeze(1).clamp(0, 1).detach().cpu().numpy()
@@ -47,7 +75,11 @@ class ViTClassifier(pl.LightningModule):
 
     def _step(self, batch, stage):
         images, labels = batch
-        logits, attentions = self(images)
+        output = self(images)
+        if isinstance(output, tuple):
+            logits, attentions = output
+        else:
+            logits, attentions = output, None
         loss = self.criterion(logits, labels)
         predictions = logits.argmax(dim=-1)
         acc = (predictions == labels).float().mean()
@@ -62,9 +94,7 @@ class ViTClassifier(pl.LightningModule):
         if experiment is None or not hasattr(experiment, "add_images"):
             return
         images, _ = batch
-        mean = images.new_tensor(CIFAR_MEAN)[:, None, None]
-        std = images.new_tensor(CIFAR_STD)[:, None, None]
-        preview = (images[:16] * std + mean).clamp(0, 1)
+        preview = self._denormalize(images[:16])
         experiment.add_images("train/samples", preview, global_step=self.global_step)
 
     def training_step(self, batch, batch_idx):
@@ -80,7 +110,11 @@ class ViTClassifier(pl.LightningModule):
                 "images": images[:n].detach().cpu(),
                 "labels": labels[:n].detach().cpu(),
                 "predictions": predictions[:n].detach().cpu(),
-                "attentions": [a[:n].detach().cpu() for a in attentions],
+                "attentions": (
+                    None
+                    if attentions is None
+                    else [a[:n].detach().cpu() for a in attentions]
+                ),
             }
         return loss
 
@@ -94,26 +128,29 @@ class ViTClassifier(pl.LightningModule):
         ):
             return
 
-        mean = images.new_tensor(CIFAR_MEAN)[:, None, None]
-        std = images.new_tensor(CIFAR_STD)[:, None, None]
-        preview = (images * std + mean).clamp(0, 1)
+        preview = self._denormalize(images)
 
-        # attentions[layer]: (B, heads, tokens, tokens)
-        grid_size = self.hparams.image_size // self.hparams.patch_size
-        attention = torch.stack(self.sample["attentions"]).mean(dim=0)
-        cls_to_patches = attention[:, :, 0, 1:]
-        grid = cls_to_patches.mean(dim=1).reshape(-1, 1, grid_size, grid_size)
-        grid = grid / grid.amax(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
-        grid = F.interpolate(grid, size=preview.shape[-2:], mode="bilinear", align_corners=False)
-        overlay = self._attention_overlay(preview, grid)
-        experiment.add_images("val/attention_map", overlay, global_step=self.global_step)
+        # ViT returns one attention map per layer. Swin does not.
+        if self.sample.get("attentions"):
+            grid_size = self.hparams.image_size // self.hparams.patch_size
+            attention = torch.stack(self.sample["attentions"]).mean(dim=0)
+            cls_to_patches = attention[:, :, 0, 1:]
+            grid = cls_to_patches.mean(dim=1).reshape(-1, 1, grid_size, grid_size)
+            grid = grid / grid.amax(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
+            grid = F.interpolate(
+                grid, size=preview.shape[-2:], mode="bilinear", align_corners=False
+            )
+            overlay = self._attention_overlay(preview, grid)
+            experiment.add_images(
+                "val/attention_map", overlay, global_step=self.global_step
+            )
 
         lines = []
         for i, (pred, label) in enumerate(
             zip(self.sample["predictions"], self.sample["labels"])
         ):
-            pred_name = CIFAR10_CLASSES[int(pred)]
-            label_name = CIFAR10_CLASSES[int(label)]
+            pred_name = self.hparams.class_names[int(pred)]
+            label_name = self.hparams.class_names[int(label)]
             lines.append(f"{i}: pred={pred_name}  label={label_name}")
         experiment.add_text("val/predictions", "\n".join(lines), global_step=self.global_step)
 
