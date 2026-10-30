@@ -157,12 +157,46 @@ class ViTClassifier(pl.LightningModule):
         self.sample = {"images": [], "labels": [], "attentions": [], "predictions": []}
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.hparams.lr,
-            weight_decay=self.hparams.weight_decay,
-        )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=self.trainer.max_epochs
-        )
+        if self.hparams.model_name == "swin":
+            decay, no_decay = [], []
+            for name, param in self.named_parameters():
+                if not param.requires_grad:
+                    continue
+                # Relative position bias is the only position signal in Swin.
+                # Decaying it, or the norm scales, pulls those toward zero.
+                if param.ndim <= 1 or name.endswith("relative_position_bias_table"):
+                    no_decay.append(param)
+                else:
+                    decay.append(param)
+            optimizer = torch.optim.AdamW(
+                [
+                    {"params": decay, "weight_decay": self.hparams.weight_decay},
+                    {"params": no_decay, "weight_decay": 0.0},
+                ],
+                lr=self.hparams.lr,
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                self.parameters(),
+                lr=self.hparams.lr,
+                weight_decay=self.hparams.weight_decay,
+            )
+
+        max_epochs = self.trainer.max_epochs
+        if self.hparams.model_name == "swin" and max_epochs > 1:
+            warmup_epochs = min(5, max(1, max_epochs // 10))
+            warmup_epochs = min(warmup_epochs, max_epochs - 1)
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.01, total_iters=warmup_epochs
+            )
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=max_epochs - warmup_epochs
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=max_epochs
+            )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}

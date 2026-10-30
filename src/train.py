@@ -86,7 +86,12 @@ def parse_args():
         help="Patch side length in pixels. Defaults to 4 for cifar, 8 for stl10 with vit, and 4 for stl10 with swin. Must divide the image side.",
     )
     parser.add_argument("--embed-dim", type=int, default=96)
-    parser.add_argument("--window-size", type=int, default=7)
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=None,
+        help="Swin window. Defaults to 4 on cifar (8x8 grid) and 6 on stl10 (24x24 grid).",
+    )
     parser.add_argument("--depths", type=int, nargs="+", default=[2, 2, 6, 2])
     parser.add_argument("--swin-heads", type=int, nargs="+", default=[3, 6, 12, 24])
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -115,6 +120,10 @@ def main():
             args.patch_size = 4
         else:
             args.patch_size = spec["patch_size"]
+    if args.window_size is None:
+        # 7 is the ImageNet window. It does not divide an 8 or 24 token grid,
+        # so the extra cells are padding and the later stages collapse to one window.
+        args.window_size = 6 if args.dataset == "stl10" else 4
     if spec["image_size"] % args.patch_size != 0:
         raise SystemExit(
             f"patch size {args.patch_size} must divide image size {spec['image_size']} for {args.dataset}"

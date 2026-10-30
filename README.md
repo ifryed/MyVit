@@ -17,8 +17,11 @@ MyViT/
 │   ├── pl_model.py        # Lightning module, loss, optimizer, TensorBoard images
 │   ├── pl_datamodule.py   # CIFAR-10 and STL-10 dataloaders
 │   ├── cifarDataset.py    # CIFAR-10 PNG loader and patch helpers
-├── data/cifar-10/         # images and labels (not created by the code)
-├── data/stl-10/           # STL-10 binaries (downloaded by --dataset stl10)
+├── scripts/
+│   ├── download_cifar10.py
+│   └── download_stl10.py
+├── data/cifar-10/         # written by scripts/download_cifar10.py
+├── data/stl-10/           # written by scripts/download_stl10.py
 ├── docs/architecture.md
 ```
 
@@ -39,7 +42,14 @@ pip install torch torchvision pytorch-lightning tensorboard numpy scikit-image m
 
 ## Data
 
-Download the CIFAR-10 PNG release from the [Kaggle CIFAR-10 competition](https://www.kaggle.com/competitions/cifar-10/data) (a Kaggle account is required) and place it under `data/cifar-10`:
+From the repository root:
+
+```bash
+python scripts/download_cifar10.py
+python scripts/download_stl10.py
+```
+
+`download_cifar10.py` fetches the official CIFAR-10 archive and writes the PNG layout the loader expects:
 
 ```
 data/cifar-10/
@@ -54,7 +64,7 @@ Images are read as RGB, converted to channel-first tensors, and scaled to `[0, 1
 
 The labeled training set is split 90% / 10% with a fixed seed (`42`). The same indices are used for both copies of the data so train and val do not share images, while val images are not flipped.
 
-STL-10 is 96×96 RGB with the same 10-class setup (airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck). `--dataset stl10` downloads it into `data/stl-10` on first use. Training uses the 5,000 labeled images. Validation uses the official 8,000-image test split. The ViT default patch size is 8 (144 tokens). Swin keeps patch size 4 so its four stages can keep halving the 24×24 grid.
+STL-10 is 96×96 RGB with the same 10-class setup (airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck). `download_stl10.py` stores the binaries in `data/stl-10`. Training with `--dataset stl10` downloads the same files if they are missing. Training uses the 5,000 labeled images. Validation uses the official 8,000-image test split. The ViT default patch size is 8 (144 tokens). Swin keeps patch size 4 so its four stages can keep halving the 24×24 grid.
 
 ## Train
 

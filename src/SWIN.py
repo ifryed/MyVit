@@ -24,6 +24,55 @@ def window_partition(x, window_size):
     return windows_reshape
 
 
+def attention_mask(height, width, window_size, shift_size, device):
+    """Mask for shifted windows and for padding.
+
+    A cyclic shift only connects neighboring windows. When the feature map
+    fits in one window, the shift mask instead cuts attention inside that
+    window, so the shift is dropped. Padded cells get their own id so real
+    tokens do not attend to them.
+    """
+    if min(height, width) <= window_size:
+        shift_size = 0
+
+    pad_r = (window_size - width % window_size) % window_size
+    pad_b = (window_size - height % window_size) % window_size
+    padded_h = height + pad_b
+    padded_w = width + pad_r
+    if shift_size == 0 and pad_r == 0 and pad_b == 0:
+        return None, padded_h, padded_w, shift_size
+
+    img_mask = torch.zeros((1, padded_h, padded_w, 1), device=device)
+    if shift_size > 0:
+        h_slices = (
+            slice(0, -window_size),
+            slice(-window_size, -shift_size),
+            slice(-shift_size, None),
+        )
+        w_slices = (
+            slice(0, -window_size),
+            slice(-window_size, -shift_size),
+            slice(-shift_size, None),
+        )
+        region = 0
+        for h in h_slices:
+            for w in w_slices:
+                img_mask[:, h, w, :] = region
+                region += 1
+    if pad_b > 0:
+        img_mask[:, height:, :, :] = -1
+    if pad_r > 0:
+        img_mask[:, :, width:, :] = -1
+
+    mask_windows = window_partition(img_mask, window_size)
+    mask_windows = mask_windows.reshape(-1, window_size * window_size)
+    attn_mask = mask_windows[:, :, None] - mask_windows[:, None, :]
+    attn_mask = attn_mask.masked_fill(attn_mask != 0, -100.0).masked_fill(
+        attn_mask == 0, 0.0
+    )
+    return attn_mask, padded_h, padded_w, shift_size
+
+
 def window_reverse(windows, window_size, H, W):
     """
     Reverse window_partition.
@@ -73,6 +122,7 @@ class WindowAttention(nn.Module):
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * window_size - 1) ** 2, num_heads)
         )
+        nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
 
         # Convert (row, col) -> one integer
         relative_position_index = (
@@ -251,43 +301,15 @@ class SwinTransformerBlock(nn.Module):
         # 1. Normalization
         x = self.norm1(x)
 
-        # Pad so both sides are divisible by the window size.
-        pad_r = (self.window_size - W % self.window_size) % self.window_size
-        pad_b = (self.window_size - H % self.window_size) % self.window_size
-        if pad_r > 0 or pad_b > 0:
-            x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
-        _, Hp, Wp, _ = x.shape
+        attn_mask, Hp, Wp, shift_size = attention_mask(
+            H, W, self.window_size, self.shift_size, x.device
+        )
+        if Hp != H or Wp != W:
+            x = F.pad(x, (0, 0, 0, Wp - W, 0, Hp - H))
 
         # 2. Attention
-        if self.shift_size > 0:
-            x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
-
-            NO_GO_ZONE = -100.0
-            img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)
-            h_slices = (
-                slice(0, -self.window_size),
-                slice(-self.window_size, -self.shift_size),
-                slice(-self.shift_size, None),
-            )
-            w_slices = (
-                slice(0, -self.window_size),
-                slice(-self.window_size, -self.shift_size),
-                slice(-self.shift_size, None),
-            )
-
-            cnt = 0
-            for h in h_slices:
-                for w in w_slices:
-                    img_mask[:, h, w, :] = cnt
-                    cnt += 1
-
-            mask_windows = window_partition(img_mask, self.window_size)
-            mask_windows = mask_windows.reshape(-1, self.window_size * self.window_size)
-            attn_mask = mask_windows[:, :, None] - mask_windows[:, None, :]
-            attn_mask[attn_mask != 0] = NO_GO_ZONE
-            attn_mask[attn_mask == 0] = 0.0
-        else:
-            attn_mask = None
+        if shift_size > 0:
+            x = torch.roll(x, shifts=(-shift_size, -shift_size), dims=(1, 2))
 
         x_window = window_partition(x, self.window_size)
 
@@ -301,9 +323,9 @@ class SwinTransformerBlock(nn.Module):
 
         # 5. reverse window_partition
         x = window_reverse(x_window, self.window_size, Hp, Wp)
-        if self.shift_size > 0:
-            x = torch.roll(x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
-        if pad_r > 0 or pad_b > 0:
+        if shift_size > 0:
+            x = torch.roll(x, shifts=(shift_size, shift_size), dims=(1, 2))
+        if Hp != H or Wp != W:
             x = x[:, :H, :W, :].contiguous()
 
         # 6. Add & Norm
@@ -368,6 +390,21 @@ class SwinTransformer(nn.Module):
 
         self.norm = nn.LayerNorm(embed_dim * 2 ** (self.num_layers - 1))
         self.head = nn.Linear(embed_dim * 2 ** (self.num_layers - 1), num_classes)
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, nn.Linear):
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Conv2d):
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
 
     def forward(self, x):
         B, C, H, W = x.shape
